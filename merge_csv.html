@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unir Planilhas CSV</title>
+<link rel="stylesheet" href="./CSS/style.css">
+</head>
+<body>
+
+<h1>🗂 Unir Planilhas CSV</h1>
+<p class="subtitle">Arraste ou selecione múltiplos arquivos CSV para combiná-los em um só.</p>
+
+<div class="drop-zone" id="dropZone">
+  <input type="file" id="fileInput" accept=".csv" multiple>
+  <div class="drop-icon">📂</div>
+  <div class="drop-text">
+    Arraste arquivos CSV aqui ou <span onclick="document.getElementById('fileInput').click()">clique para selecionar</span>
+  </div>
+</div>
+
+<div class="files-list" id="filesList"></div>
+
+<div class="alert" id="alertBox"></div>
+
+<div class="options" id="optionsBox" style="display:none">
+  <div class="options-title">Opções</div>
+  <div class="option-row">
+    <label>
+      <input type="checkbox" id="chkHeader" checked>
+      Primeira linha é cabeçalho
+    </label>
+  </div>
+  <div class="option-row">
+    <label>
+      <input type="checkbox" id="chkSourceCol">
+      Adicionar coluna "Arquivo Origem"
+    </label>
+  </div>
+  <div class="option-row">
+    <label style="gap:10px">
+      Separador:
+      <select id="sepSelect">
+        <option value=",">Vírgula (,)</option>
+        <option value=";">Ponto e vírgula (;)</option>
+        <option value="	">Tab</option>
+        <option value="|">Pipe (|)</option>
+      </select>
+    </label>
+  </div>
+</div>
+
+<button class="btn-merge" id="btnMerge" disabled onclick="mergeFiles()">
+  Unir Planilhas
+</button>
+
+<div class="preview-section" id="previewSection">
+  <div class="preview-header">
+    <span class="preview-title">Pré-visualização</span>
+    <span class="stats" id="statsText"></span>
+  </div>
+  <div class="table-wrapper">
+    <table id="previewTable"></table>
+  </div>
+  <button class="btn-download" onclick="downloadCSV()">
+    ⬇ Baixar CSV unificado
+  </button>
+</div>
+
+<script>
+  let loadedFiles = [];
+  let mergedData = null;
+  let mergedHeaders = [];
+
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const filesList = document.getElementById('filesList');
+  const btnMerge = document.getElementById('btnMerge');
+  const optionsBox = document.getElementById('optionsBox');
+  const alertBox = document.getElementById('alertBox');
+  const previewSection = document.getElementById('previewSection');
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    handleFiles([...e.dataTransfer.files]);
+  });
+
+  fileInput.addEventListener('change', () => handleFiles([...fileInput.files]));
+
+  function handleFiles(files) {
+    const csvFiles = files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+    if (!csvFiles.length) { showAlert('Selecione apenas arquivos .csv'); return; }
+
+    csvFiles.forEach(file => {
+      if (loadedFiles.find(f => f.name === file.name)) return;
+      const reader = new FileReader();
+      reader.onload = e => {
+        const content = e.target.result;
+        const sep = detectSeparator(content);
+        const lines = content.trim().split('\n').filter(l => l.trim());
+        loadedFiles.push({ name: file.name, content, rows: lines.length, sep });
+        renderFileList();
+        updateUI();
+      };
+      reader.readAsText(file, 'UTF-8');
+    });
+  }
+
+  function detectSeparator(content) {
+    const first = content.split('\n')[0] || '';
+    const counts = { ',': (first.match(/,/g)||[]).length, ';': (first.match(/;/g)||[]).length, '\t': (first.match(/\t/g)||[]).length };
+    return Object.entries(counts).sort((a,b) => b[1]-a[1])[0][0];
+  }
+
+  function renderFileList() {
+    if (!loadedFiles.length) { filesList.innerHTML = ''; return; }
+    filesList.innerHTML = loadedFiles.map((f, i) => `
+      <div class="file-item">
+        <span class="file-icon">📄</span>
+        <span class="file-name">${f.name}</span>
+        <span class="file-rows">${f.rows} linhas</span>
+        <span class="file-remove" onclick="removeFile(${i})" title="Remover">✕</span>
+      </div>
+    `).join('');
+  }
+
+  function removeFile(i) {
+    loadedFiles.splice(i, 1);
+    renderFileList();
+    updateUI();
+    previewSection.classList.remove('visible');
+    mergedData = null;
+  }
+
+  function updateUI() {
+    const has = loadedFiles.length >= 1;
+    btnMerge.disabled = !has;
+    optionsBox.style.display = has ? 'block' : 'none';
+    hideAlert();
+  }
+
+  function parseCSV(content, sep) {
+    const lines = content.trim().split('\n');
+    return lines.map(line => {
+      const cells = [];
+      let cur = '', inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') { inQ = !inQ; }
+        else if (c === sep && !inQ) { cells.push(cur.trim()); cur = ''; }
+        else { cur += c; }
+      }
+      cells.push(cur.trim());
+      return cells;
+    });
+  }
+
+  function mergeFiles() {
+    const hasHeader = document.getElementById('chkHeader').checked;
+    const addSource = document.getElementById('chkSourceCol').checked;
+    const sep = document.getElementById('sepSelect').value;
+    hideAlert();
+
+    let allHeaders = [];
+    let parsedFiles = [];
+
+    loadedFiles.forEach(f => {
+      const rows = parseCSV(f.content, sep);
+      if (!rows.length) return;
+      const headers = hasHeader ? rows[0].map(h => h.replace(/^"|"$/g,'')) : rows[0].map((_,i) => 'Coluna'+(i+1));
+      const dataRows = hasHeader ? rows.slice(1) : rows;
+      headers.forEach(h => { if (!allHeaders.includes(h)) allHeaders.push(h); });
+      parsedFiles.push({ name: f.name.replace('.csv',''), headers, dataRows });
+    });
+
+    if (addSource) allHeaders = ['Arquivo_Origem', ...allHeaders];
+
+    const merged = [];
+    parsedFiles.forEach(pf => {
+      pf.dataRows.forEach(row => {
+        const obj = {};
+        pf.headers.forEach((h, i) => { obj[h] = (row[i] || '').replace(/^"|"$/g,''); });
+        const outRow = allHeaders.map(h => {
+          if (h === 'Arquivo_Origem') return pf.name;
+          return obj[h] !== undefined ? obj[h] : '';
+        });
+        merged.push(outRow);
+      });
+    });
+
+    mergedHeaders = allHeaders;
+    mergedData = merged;
+
+    renderPreview(allHeaders, merged);
+  }
+
+  function renderPreview(headers, rows) {
+    const preview = rows.slice(0, 100);
+    const table = document.getElementById('previewTable');
+    table.innerHTML = `
+      <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+      <tbody>${preview.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>
+    `;
+    document.getElementById('statsText').textContent =
+      `${rows.length.toLocaleString('pt-BR')} linhas · ${headers.length} colunas${rows.length > 100 ? ' · mostrando 100 primeiras' : ''}`;
+    previewSection.classList.add('visible');
+  }
+
+  function downloadCSV() {
+    if (!mergedData) return;
+    const sep = document.getElementById('sepSelect').value;
+    const escape = v => (v.includes(sep) || v.includes('"') || v.includes('\n')) ? `"${v.replace(/"/g,'""')}"` : v;
+    const lines = [mergedHeaders.map(escape).join(sep)];
+    mergedData.forEach(row => lines.push(row.map(escape).join(sep)));
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'planilha_unificada.csv'; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function showAlert(msg) { alertBox.textContent = msg; alertBox.classList.add('visible'); }
+  function hideAlert() { alertBox.classList.remove('visible'); }
+</script>
+</body>
+</html>
